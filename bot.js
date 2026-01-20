@@ -31,119 +31,110 @@ client.on("ready", () => {
   startHttpServer();
 });
 
-// ===== KEEP-ALIVE + INTERNAL LOG SERVER =====
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 5000);
 
 function startHttpServer() {
-  http
-    .createServer((req, res) => {
-      // =========================
-      // GET endpoints
-      // =========================
-      if (req.method === "GET") {
-        // ✅ Step 1: dedicated bot ping endpoint
-        if (req.url === "/bot/ping") {
-          res.writeHead(200, { "Content-Type": "text/plain" });
-          return res.end("BOT OK");
-        }
+  http.createServer((req, res) => {
+    // Normalize URL (strip query string)
+    const url = (req.url || "/").split("?")[0];
 
-        // existing keepalive behavior
-        if (req.url !== KEEPALIVE_PATH && KEEPALIVE_PATH !== "/") {
-          res.writeHead(404);
-          return res.end("Not found");
-        }
+    // --- GET endpoints ---
+    if (req.method === "GET") {
+      // Dedicated ping endpoint (always available)
+      if (url === "/bot/ping") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return res.end("BOT OK");
+      }
 
+      // Keepalive endpoint(s)
+      // Always respond OK on "/" too to avoid confusion
+      if (url === "/" || url === KEEPALIVE_PATH) {
         res.writeHead(200, { "Content-Type": "text/plain" });
         return res.end("OK");
       }
 
-      // =========================
-      // POST /internal/log (Step 6.2)
-      // =========================
-      if (req.method === "POST" && req.url === "/internal/log") {
-        if (!BOT_INTERNAL_SECRET || !LOG_CHANNEL_ID) {
-          res.writeHead(500);
-          return res.end("Bot logging not configured");
-        }
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("Not found");
+    }
 
-        const auth = req.headers.authorization || "";
-        if (auth !== BOT_INTERNAL_SECRET) {
-          res.writeHead(401);
-          return res.end("Unauthorized");
-        }
-
-        let body = "";
-        req.on("data", (chunk) => (body += chunk));
-        req.on("end", async () => {
-          try {
-            const parsed = JSON.parse(body || "{}");
-            const { type, payload } = parsed;
-
-            const channel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
-            if (!channel) {
-              res.writeHead(500);
-              return res.end("Log channel not found");
-            }
-
-            // Handle banned join attempt embed
-            if (type === "banned_join_attempt") {
-              const username = payload?.username || "?";
-              const displayName = payload?.displayName || username || "Unknown";
-              const userId = payload?.userId ?? "Unknown";
-              const reason = payload?.reason || "Rule violation";
-              const moderator = payload?.moderator || "Unknown";
-              const placeId = payload?.placeId ? String(payload.placeId) : "Unknown";
-              const universeId = payload?.universeId ? String(payload.universeId) : "Unknown";
-              const serverId = payload?.serverId ? String(payload.serverId) : "Unknown";
-              const networkId = payload?.networkId ? String(payload.networkId) : "Unknown";
-
-              const userLine =
-                `**${displayName}** (@${username})\n` +
-                `UserId: \`${userId}\``;
-
-              const embed = new EmbedBuilder()
-                .setTitle("🚫 Banned user attempted to join")
-                .addFields(
-                  { name: "User", value: userLine, inline: false },
-                  { name: "Reason", value: reason, inline: false },
-                  { name: "Moderator", value: moderator, inline: true },
-                  { name: "Network", value: networkId, inline: true },
-                  { name: "PlaceId", value: placeId, inline: true },
-                  { name: "UniverseId", value: universeId, inline: true },
-                  { name: "Server", value: serverId, inline: true }
-                )
-                .setTimestamp(new Date());
-
-              await channel.send({ embeds: [embed] });
-            } else {
-              // Unknown log type (still acknowledge)
-              const embed = new EmbedBuilder()
-                .setTitle("ℹ️ Moderation Event")
-                .setDescription(`Unknown event type: \`${String(type)}\``)
-                .setTimestamp(new Date());
-              await channel.send({ embeds: [embed] });
-            }
-
-            res.writeHead(200, { "Content-Type": "text/plain" });
-            res.end("OK");
-          } catch (e) {
-            res.writeHead(400);
-            res.end("Bad request");
-          }
-        });
-
-        return;
+    // --- POST /internal/log ---
+    if (req.method === "POST" && url === "/internal/log") {
+      if (!BOT_INTERNAL_SECRET || !LOG_CHANNEL_ID) {
+        res.writeHead(500);
+        return res.end("Bot logging not configured");
       }
 
-      res.writeHead(404);
-      res.end("Not found");
-    })
-    .listen(PORT, () => {
-      console.log(`HTTP server listening on port ${PORT} (keepalive path: ${KEEPALIVE_PATH})`);
-      console.log("Internal log endpoint: POST /internal/log");
-      console.log("Bot ping endpoint: GET /bot/ping");
-    });
+      const auth = req.headers.authorization || "";
+      if (auth !== BOT_INTERNAL_SECRET) {
+        res.writeHead(401);
+        return res.end("Unauthorized");
+      }
+
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", async () => {
+        try {
+          const parsed = JSON.parse(body || "{}");
+          const { type, payload } = parsed;
+
+          const channel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+          if (!channel) {
+            res.writeHead(500);
+            return res.end("Log channel not found");
+          }
+
+          if (type === "banned_join_attempt") {
+            const username = payload?.username || "?";
+            const displayName = payload?.displayName || username || "Unknown";
+            const userId = payload?.userId ?? "Unknown";
+            const reason = payload?.reason || "Rule violation";
+            const moderator = payload?.moderator || "Unknown";
+            const placeId = payload?.placeId ? String(payload.placeId) : "Unknown";
+            const universeId = payload?.universeId ? String(payload.universeId) : "Unknown";
+            const serverId = payload?.serverId ? String(payload.serverId) : "Unknown";
+            const networkId = payload?.networkId ? String(payload.networkId) : "Unknown";
+
+            const userLine =
+              `**${displayName}** (@${username})\n` +
+              `UserId: \`${userId}\``;
+
+            const embed = new EmbedBuilder()
+              .setTitle("🚫 Banned user attempted to join")
+              .addFields(
+                { name: "User", value: userLine, inline: false },
+                { name: "Reason", value: reason, inline: false },
+                { name: "Moderator", value: moderator, inline: true },
+                { name: "Network", value: networkId, inline: true },
+                { name: "PlaceId", value: placeId, inline: true },
+                { name: "UniverseId", value: universeId, inline: true },
+                { name: "Server", value: serverId, inline: true }
+              )
+              .setTimestamp(new Date());
+
+            await channel.send({ embeds: [embed] });
+          }
+
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("OK");
+        } catch (e) {
+          res.writeHead(400);
+          res.end("Bad request");
+        }
+      });
+
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not found");
+  }).listen(PORT, () => {
+    console.log(`HTTP server listening on port ${PORT}`);
+    console.log("GET / -> OK");
+    console.log("GET /bot/ping -> BOT OK");
+    console.log("POST /internal/log");
+  });
 }
+
 
 // ===== WEBAPP HELPERS =====
 function authHeaders() {
