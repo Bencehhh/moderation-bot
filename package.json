@@ -1,0 +1,8 @@
+{
+  "name": "roblox-moderation-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": { "start": "node bot.js" },
+  "dependencies": { "discord.js": "^14.18.0" }
+}
