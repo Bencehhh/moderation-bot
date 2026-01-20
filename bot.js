@@ -1,12 +1,16 @@
 import http from "http";
 import crypto from "crypto";
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 
 // ===== ENV =====
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL; // e.g. https://your-webapp.onrender.com
 const WEBAPP_SHARED_SECRET = process.env.WEBAPP_SHARED_SECRET;
 const MOD_ROLE_NAME = process.env.MOD_ROLE_NAME || "Moderator";
+
+// Step 6.2 env vars (NEW)
+const BOT_INTERNAL_SECRET = process.env.BOT_INTERNAL_SECRET; // shared with relay
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;           // channel to send embeds
 
 // Optional: a simple path UptimeRobot can ping (default "/")
 const KEEPALIVE_PATH = process.env.KEEPALIVE_PATH || "/";
@@ -16,29 +20,117 @@ if (!DISCORD_BOT_TOKEN || !WEBAPP_URL || !WEBAPP_SHARED_SECRET) {
   process.exit(1);
 }
 
-// ===== KEEP-ALIVE HTTP SERVER =====
-// This keeps Replit-like hosts awake when pinged by UptimeRobot.
-const PORT = Number(process.env.PORT || 3000);
-
-http
-  .createServer((req, res) => {
-    if (req.url !== KEEPALIVE_PATH && KEEPALIVE_PATH !== "/") {
-      res.writeHead(404);
-      return res.end("Not found");
-    }
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("OK");
-  })
-  .listen(PORT, () => {
-    console.log(`Keep-alive server listening on port ${PORT} (path: ${KEEPALIVE_PATH})`);
-  });
-
 // ===== DISCORD CLIENT =====
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-client.on("ready", () => console.log(`Bot online as ${client.user.tag}`));
+client.on("ready", () => {
+  console.log(`Bot online as ${client.user.tag}`);
+  // Start HTTP server AFTER bot is ready so it can send embeds
+  startHttpServer();
+});
+
+// ===== KEEP-ALIVE + INTERNAL LOG SERVER =====
+const PORT = Number(process.env.PORT || 3000);
+
+function startHttpServer() {
+  http
+    .createServer((req, res) => {
+      // --- keepalive ping ---
+      if (req.method === "GET") {
+        if (req.url !== KEEPALIVE_PATH && KEEPALIVE_PATH !== "/") {
+          res.writeHead(404);
+          return res.end("Not found");
+        }
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return res.end("OK");
+      }
+
+      // --- internal embed logger (Step 6.2) ---
+      if (req.method === "POST" && req.url === "/internal/log") {
+        if (!BOT_INTERNAL_SECRET || !LOG_CHANNEL_ID) {
+          res.writeHead(500);
+          return res.end("Bot logging not configured");
+        }
+
+        const auth = req.headers.authorization || "";
+        if (auth !== BOT_INTERNAL_SECRET) {
+          res.writeHead(401);
+          return res.end("Unauthorized");
+        }
+
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", async () => {
+          try {
+            const parsed = JSON.parse(body || "{}");
+            const { type, payload } = parsed;
+
+            const channel = await client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+            if (!channel) {
+              res.writeHead(500);
+              return res.end("Log channel not found");
+            }
+
+            // Handle banned join attempt embed
+            if (type === "banned_join_attempt") {
+              const username = payload?.username || "?";
+              const displayName = payload?.displayName || username || "Unknown";
+              const userId = payload?.userId ?? "Unknown";
+              const reason = payload?.reason || "Rule violation";
+              const moderator = payload?.moderator || "Unknown";
+              const placeId = payload?.placeId ? String(payload.placeId) : "Unknown";
+              const universeId = payload?.universeId ? String(payload.universeId) : "Unknown";
+              const serverId = payload?.serverId ? String(payload.serverId) : "Unknown";
+              const networkId = payload?.networkId ? String(payload.networkId) : "Unknown";
+
+              const userLine =
+                `**${displayName}** (@${username})\n` +
+                `UserId: \`${userId}\``;
+
+              const embed = new EmbedBuilder()
+                .setTitle("🚫 Banned user attempted to join")
+                .addFields(
+                  { name: "User", value: userLine, inline: false },
+                  { name: "Reason", value: reason, inline: false },
+                  { name: "Moderator", value: moderator, inline: true },
+                  { name: "Network", value: networkId, inline: true },
+                  { name: "PlaceId", value: placeId, inline: true },
+                  { name: "UniverseId", value: universeId, inline: true },
+                  { name: "Server", value: serverId, inline: true }
+                )
+                .setTimestamp(new Date());
+
+              await channel.send({ embeds: [embed] });
+            } else {
+              // Unknown log type (still acknowledge)
+              const embed = new EmbedBuilder()
+                .setTitle("ℹ️ Moderation Event")
+                .setDescription(`Unknown event type: \`${String(type)}\``)
+                .setTimestamp(new Date());
+              await channel.send({ embeds: [embed] });
+            }
+
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e) {
+            res.writeHead(400);
+            res.end("Bad request");
+          }
+        });
+
+        return;
+      }
+
+      res.writeHead(404);
+      res.end("Not found");
+    })
+    .listen(PORT, () => {
+      console.log(`HTTP server listening on port ${PORT} (keepalive path: ${KEEPALIVE_PATH})`);
+      console.log("Internal log endpoint: POST /internal/log");
+    });
+}
 
 // ===== WEBAPP HELPERS =====
 function authHeaders() {
