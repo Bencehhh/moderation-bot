@@ -37,17 +37,29 @@ const PORT = Number(process.env.PORT || 3000);
 function startHttpServer() {
   http
     .createServer((req, res) => {
-      // --- keepalive ping ---
+      // =========================
+      // GET endpoints
+      // =========================
       if (req.method === "GET") {
+        // ✅ Step 1: dedicated bot ping endpoint
+        if (req.url === "/bot/ping") {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          return res.end("BOT OK");
+        }
+
+        // existing keepalive behavior
         if (req.url !== KEEPALIVE_PATH && KEEPALIVE_PATH !== "/") {
           res.writeHead(404);
           return res.end("Not found");
         }
+
         res.writeHead(200, { "Content-Type": "text/plain" });
         return res.end("OK");
       }
 
-      // --- internal embed logger (Step 6.2) ---
+      // =========================
+      // POST /internal/log (Step 6.2)
+      // =========================
       if (req.method === "POST" && req.url === "/internal/log") {
         if (!BOT_INTERNAL_SECRET || !LOG_CHANNEL_ID) {
           res.writeHead(500);
@@ -129,6 +141,7 @@ function startHttpServer() {
     .listen(PORT, () => {
       console.log(`HTTP server listening on port ${PORT} (keepalive path: ${KEEPALIVE_PATH})`);
       console.log("Internal log endpoint: POST /internal/log");
+      console.log("Bot ping endpoint: GET /bot/ping");
     });
 }
 
